@@ -1,83 +1,110 @@
 import discord
-from discord.ext import commands
-import os, json, re
+import json
+import os
+import re
 from flask import Flask, jsonify
 from threading import Thread
 
-# TOKEN IS READ FROM RENDER ENV - NO TOKEN INSIDE FILE
-TOKEN = os.getenv("TOKEN")
+# --- FLASK API FOR WEBSITE ---
+app = Flask(__name__)
 
-DATA_FILE = "leaderboard.json"
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE,"w") as f:
-        json.dump([],f)
-
-def load_data():
-    with open(DATA_FILE,"r") as f:
-        return json.load(f)
-
-def save_data(d):
-    with open(DATA_FILE,"w") as f:
-        json.dump(d,f,indent=2)
-
-# WEBSITE API - your Netlify site will read from here
-app = Flask('')
 @app.route('/')
 def home():
-    return "MMTC Board - Alive"
+    return "MMTC Bot is Live"
 
 @app.route('/api/leaderboard')
-def api():
-    return jsonify(load_data())
+def leaderboard():
+    if not os.path.exists('data.json'):
+        return jsonify([])
+    try:
+        with open('data.json', 'r') as f:
+            data = json.load(f)
+        return jsonify(data)
+    except:
+        return jsonify([])
 
-def run():
-    app.run(host='0.0.0.0',port=8080)
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
 
-def keep_alive():
-    Thread(target=run).start()
-
-# DISCORD BOT
+# --- DISCORD BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client(intents=intents)
 
-@bot.event
+VALID_MODES = ["SWORD", "CRYSTAL", "UHC", "AXE", "MACE", "SMP"]
+VALID_TIERS = ["HT1","LT1","MT1","HT2","MT2","LT2","HT3","MT3","LT3","HT4","MT4","LT4","HT5","MT5","LT5"]
+
+def load_data():
+    if not os.path.exists('data.json'):
+        return []
+    try:
+        with open('data.json', 'r') as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_data(data):
+    with open('data.json', 'w') as f:
+        json.dump(data, f, indent=2)
+
+@client.event
 async def on_ready():
-    print(f"Bot ON: {bot.user}")
-    await bot.tree.sync()
+    print(f"Logged in as {client.user}")
 
-# AUTO RECEIVE - just type: NoMercy Sword LT3
-@bot.event
+@client.event
 async def on_message(message):
+    if message.author == client.user:
+        return
     if message.author.bot:
         return
-    match = re.search(r"(\w+)\s+(\w+)\s+(LT\d|HT\d|MT\d|H\d|M\d|L\d)", message.content, re.IGNORECASE)
-    if match:
-        ign, mode, tier = match.groups()
-        data = load_data()
-        data = [p for p in data if not (p['ign'].lower()==ign.lower() and p['mode'].lower()==mode.lower())]
-        data.append({"ign": ign, "mode": mode.upper(), "tier": tier.upper()})
-        save_data(data)
-        await message.channel.send(f"✅ AUTO SAVED: **{ign}** | {mode.upper()} = **{tier.upper()}**")
 
-@bot.tree.command(name="start", description="Show board")
-async def start(interaction: discord.Interaction):
-    data = load_data()
-    embed = discord.Embed(title="MMTC - Live Board", color=0x00ff88)
-    if not data:
-        embed.description = "No players yet - waiting for auto data..."
-    else:
-        txt = "\n".join([f"#{i+1} **{p['ign']}** - {p['mode']} {p['tier']}" for i,p in enumerate(data[:30])])
-        embed.description = txt
-    await interaction.response.send_message(embed=embed)
+    content = message.content.strip()
+    if not content:
+        return
 
-@bot.tree.command(name="addtier", description="Manual add")
-async def addtier(interaction: discord.Interaction, ign: str, mode: str, tier: str):
+    # Expected: IGN MODE TIER  e.g. NotArjunYT Sword LT3
+    parts = content.split()
+    if len(parts) != 3:
+        return
+
+    ign, mode, tier = parts
+    mode = mode.upper()
+    tier = tier.upper()
+
+    if mode not in VALID_MODES:
+        return
+    if tier not in VALID_TIERS:
+        return
+
+    # Clean IGN
+    if len(ign) < 2 or len(ign) > 20:
+        return
+
     data = load_data()
-    data = [p for p in data if not (p['ign'].lower()==ign.lower() and p['mode'].lower()==mode.lower())]
-    data.append({"ign": ign, "mode": mode.upper(), "tier": tier.upper()})
+
+    # Remove old entry for same IGN + MODE
+    data = [d for d in data if not (d['ign'].lower() == ign.lower() and d['mode'] == mode)]
+
+    # Add new
+    data.append({
+        "ign": ign,
+        "mode": mode,
+        "tier": tier
+    })
+
     save_data(data)
-    await interaction.response.send_message(f"✅ Added {ign} {mode.upper()} {tier.upper()} - website auto updated")
 
-keep_alive()
-bot.run(TOKEN)
+    try:
+        await message.add_reaction("✅")
+    except:
+        await message.channel.send(f"Saved: {ign} {mode} {tier}")
+
+if __name__ == "__main__":
+    # Start Flask in background
+    Thread(target=run_flask, daemon=True).start()
+    
+    token = os.getenv("TOKEN")
+    if not token:
+        print("ERROR: TOKEN env variable not set")
+    else:
+        client.run(token)
